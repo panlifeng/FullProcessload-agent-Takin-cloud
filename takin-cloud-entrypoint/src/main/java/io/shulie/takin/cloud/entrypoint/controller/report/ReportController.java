@@ -3,6 +3,8 @@ package io.shulie.takin.cloud.entrypoint.controller.report;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 
 import javax.annotation.Resource;
 
@@ -10,15 +12,18 @@ import com.alibaba.fastjson.JSON;
 
 import cn.hutool.core.bean.BeanUtil;
 import com.github.pagehelper.PageInfo;
+import io.shulie.takin.cloud.common.utils.NumberUtil;
 import io.shulie.takin.cloud.sdk.constant.EntrypointUrl;
 import io.shulie.takin.cloud.ext.content.trace.ContextExt;
 import com.pamirs.takin.entity.domain.dto.report.Metrices;
 import io.shulie.takin.common.beans.response.ResponseResult;
+import io.shulie.takin.cloud.biz.service.scene.SceneService;
 import io.shulie.takin.cloud.sdk.model.ScriptNodeSummaryBean;
 import io.shulie.takin.cloud.biz.input.report.WarnCreateInput;
 import io.shulie.takin.cloud.sdk.model.request.WarnQueryParam;
 import com.pamirs.takin.entity.domain.vo.report.ReportIdParam;
 import io.shulie.takin.cloud.biz.service.report.ReportService;
+import io.shulie.takin.cloud.data.model.mysql.SceneManageEntity;
 import com.pamirs.takin.entity.domain.dto.report.CloudReportDTO;
 import io.shulie.takin.cloud.common.exception.TakinCloudException;
 import io.shulie.takin.cloud.biz.output.report.ReportDetailOutput;
@@ -62,6 +67,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping(EntrypointUrl.BASIC + "/" + EntrypointUrl.MODULE_REPORT)
 public class ReportController {
 
+    @Resource
+    private SceneService sceneService;
     @Resource
     private ReportService reportService;
     @Resource
@@ -139,7 +146,7 @@ public class ReportController {
         try {
             String key = JSON.toJSONString(reportTrendQuery);
             ReportTrendResp data;
-            if (stringRedisTemplate.hasKey(key)) {
+            if (Boolean.TRUE.equals(stringRedisTemplate.hasKey(key))) {
                 data = JSON.parseObject(stringRedisTemplate.opsForValue().get(key), ReportTrendResp.class);
                 if (Objects.isNull(data)
                     || CollectionUtils.isEmpty(data.getConcurrent())
@@ -176,6 +183,30 @@ public class ReportController {
         ReportDetailResp resp = BeanUtil.copyProperties(detailOutput, ReportDetailResp.class);
         if (CollectionUtils.isNotEmpty(detailOutput.getStopReasons())) {
             resp.setStopReasons(detailOutput.getStopReasons());
+        }
+        // 老版本的实况SA汇总
+        {
+            SceneManageEntity scene = sceneService.getScene(detailOutput.getSceneId());
+            if (resp.getNodeDetail() != null
+                && resp.getNodeDetail().size() > 0
+                && scene.getScriptAnalysisResult() == null) {
+                BigDecimal count = new BigDecimal(0);
+                BigDecimal saCount = new BigDecimal(0);
+                BigDecimal percent = new BigDecimal(100);
+                for (ScriptNodeSummaryBean t : resp.getNodeDetail()) {
+                    if (t.getTempRequestCount() != null
+                        && t.getSa() != null
+                        && t.getSa().getResult() != null) {
+                        BigDecimal itemSa = new BigDecimal(t.getSa().getResult().toString());
+                        BigDecimal itemCount = new BigDecimal(t.getTempRequestCount());
+                        // 5s总数*sa百分比/100
+                        BigDecimal itemSaCount = itemCount.multiply(itemSa).divide(percent, RoundingMode.HALF_UP);
+                        saCount = saCount.add(itemSaCount);
+                        count = count.add(itemCount);
+                    }
+                }
+                resp.setSa(BigDecimal.valueOf(NumberUtil.getPercentRate(saCount, count)));
+            }
         }
         return ResponseResult.success(resp);
     }
